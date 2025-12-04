@@ -22,7 +22,7 @@ public class PRThievingHelperOverlay extends Overlay
     private final PRThievingHelperPlugin plugin;
     private final PRThievingHelperConfig config;
 
-    private Map<PRThievingHelperPlugin.StallTypes, Color> stallColors = new HashMap<>();
+    private final Map<PRThievingHelperPlugin.StallTypes, Color> stallColors = new HashMap<>();
 
     @Inject
     public PRThievingHelperOverlay(Client client,
@@ -98,8 +98,6 @@ public class PRThievingHelperOverlay extends Overlay
                     config.notifierFlashColor().getGreen(),
                     config.notifierFlashColor().getBlue(),
                     (int)(alpha * config.notifierFlashStrength()));
-            // 150 = peak opacity (0–255). Change if you want stronger/weaker flash.
-
             graphics.setColor(flashColor);
             graphics.fillRect(0, 0, client.getCanvasWidth(), client.getCanvasHeight());
         }
@@ -171,18 +169,15 @@ public class PRThievingHelperOverlay extends Overlay
             return;
         }
 
-        // Create a polygon for the square
         Polygon square = new Polygon();
         square.addPoint(topLeftPoly.xpoints[0], topLeftPoly.ypoints[0]);
         square.addPoint(topRightPoly.xpoints[1], topRightPoly.ypoints[1]);
         square.addPoint(bottomRightPoly.xpoints[2], bottomRightPoly.ypoints[2]);
         square.addPoint(bottomLeftPoly.xpoints[3], bottomLeftPoly.ypoints[3]);
 
-        // Draw the filled square
         graphics.setColor(color);
         graphics.fillPolygon(square);
 
-        // Draw the outline
         graphics.setColor(strokeColor);
         graphics.setStroke(new BasicStroke(2));
         graphics.drawPolygon(square);
