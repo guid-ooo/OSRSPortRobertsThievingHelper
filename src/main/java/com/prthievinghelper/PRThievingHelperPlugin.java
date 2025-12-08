@@ -5,6 +5,8 @@ import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.events.ClientTick;
+import net.runelite.api.events.GameTick;
 import net.runelite.api.events.NpcDespawned;
 import net.runelite.api.events.NpcSpawned;
 import net.runelite.client.Notifier;
@@ -13,7 +15,6 @@ import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.api.*;
-import net.runelite.api.events.ClientTick;
 import net.runelite.client.ui.overlay.OverlayManager;
 
 import java.util.*;
@@ -111,7 +112,6 @@ public class PRThievingHelperPlugin extends Plugin
 
 	private static final Map<StallTypes, Boolean> notifiers = new HashMap<>();
 	private static final Map<StallTypes, Boolean> watchNotifiers = new HashMap<>();
-	private static final HashSet<Integer> activeGuards = new HashSet<>();
 	private static final List<NPC> guards = new ArrayList<>();
 
 	@Inject
@@ -148,6 +148,7 @@ public class PRThievingHelperPlugin extends Plugin
 	{
 		overlayManager.remove(overlay);
 		watching.clear();
+		guards.clear();
 	}
 
 	@Subscribe
@@ -157,11 +158,9 @@ public class PRThievingHelperPlugin extends Plugin
 		if(!isValidGuard(npc))
 			return;
 
-		int npcId = npc.getId();
-		if(activeGuards.contains(npcId))
+		if(guards.contains(npc))
 			return;
 
-		activeGuards.add(npcId);
 		guards.add(npc);
 	}
 
@@ -172,17 +171,24 @@ public class PRThievingHelperPlugin extends Plugin
 		if(!isValidGuard(npc))
 			return;
 
-		int npcId = npc.getId();
-
-		if(activeGuards.contains(npcId))
-		{
-			activeGuards.remove(npcId);
-			guards.remove(npc);
-		}
+        guards.remove(npc);
 	}
 
 	@Subscribe
 	public void onClientTick(ClientTick event)
+	{
+		if (flashAlpha > 0f)
+		{
+			flashAlpha -= (float) config.notifierFlashSpeed();
+			if (flashAlpha < 0f)
+			{
+				flashAlpha = 0f;
+			}
+		}
+	}
+
+	@Subscribe
+	public void onGameTick(GameTick event)
 	{
 		//System.out.println(client.getSelectedSceneTile().getWorldLocation());
 
@@ -195,15 +201,6 @@ public class PRThievingHelperPlugin extends Plugin
 		watching.put(StallTypes.SPICE, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.SPICE)));
 		watching.put(StallTypes.VEG, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.VEG)));
 		watching.put(StallTypes.SILVER, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.SILVER)));
-
-		if (flashAlpha > 0f)
-		{
-			flashAlpha -= (float) config.notifierFlashSpeed();
-			if (flashAlpha < 0f)
-			{
-				flashAlpha = 0f;
-			}
-		}
 
 		if(config.notifyForFur())
 		{
