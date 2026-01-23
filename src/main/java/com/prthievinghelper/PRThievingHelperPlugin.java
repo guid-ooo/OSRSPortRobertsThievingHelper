@@ -9,6 +9,14 @@ import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.NpcDespawned;
 import net.runelite.api.events.NpcSpawned;
+import net.runelite.api.events.GameObjectSpawned;
+import net.runelite.api.events.GameObjectDespawned;
+import net.runelite.api.events.GroundObjectSpawned;
+import net.runelite.api.events.GroundObjectDespawned;
+import net.runelite.api.events.DecorativeObjectSpawned;
+import net.runelite.api.events.DecorativeObjectDespawned;
+import net.runelite.api.events.WallObjectSpawned;
+import net.runelite.api.events.WallObjectDespawned;
 import net.runelite.client.Notifier;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -29,7 +37,36 @@ public class PRThievingHelperPlugin extends Plugin
 		FUR, SILK, GEM, CANNON, FISH, ORE, SPICE, VEG, SILVER
 	}
 
+	// Stall object IDs (based on comments in config file)
+	private static final int FUR_STALL_ID = 58102;
+	private static final int SILK_STALL_ID = 58101;
+	private static final int GEM_STALL_ID = 58106;
+	private static final int CANNON_STALL_ID = 58108;
+	private static final int FISH_STALL_ID = 58103;
+	private static final int ORE_STALL_ID = 58107;
+	private static final int SPICE_STALL_ID = 58105;
+	private static final int VEG_STALL_ID = 58100;
+	private static final int SILVER_STALL_ID = 58104;
+
+	private static final Map<StallTypes, Integer> stallObjectIds = Map.of(
+			StallTypes.FUR, FUR_STALL_ID,
+			StallTypes.SILK, SILK_STALL_ID,
+			StallTypes.GEM, GEM_STALL_ID,
+			StallTypes.CANNON, CANNON_STALL_ID,
+			StallTypes.FISH, FISH_STALL_ID,
+			StallTypes.ORE, ORE_STALL_ID,
+			StallTypes.SPICE, SPICE_STALL_ID,
+			StallTypes.VEG, VEG_STALL_ID,
+			StallTypes.SILVER, SILVER_STALL_ID
+	);
+
 	public Map<StallTypes, Boolean> watching = new HashMap<>();
+	
+	// Track when guards arrive at stalls to predict when they'll leave
+	private final Map<StallTypes, Integer> stallWatchTicksRemaining = new HashMap<>();
+	private static final int GUARD_WATCH_DURATION = 10; // Guards watch for 10 ticks
+	private static final int THIEVING_DURATION = 5; // Thieving takes 5 ticks
+	private static final int SAFE_BUFFER_TICKS = 2; // Extra buffer for safety (highlight when ≤2 ticks remain)
 
 	public final Map<StallTypes, WorldPoint> stallPositions = Map.of(
 			StallTypes.FUR, new WorldPoint(1870, 3292, 0),
@@ -127,19 +164,28 @@ public class PRThievingHelperPlugin extends Plugin
 	private PRThievingHelperOverlay overlay;
 
 	@Inject
+	private PRThievingHelperObjectOverlay objectOverlay;
+
+	@Inject
 	private Notifier notifier;
 
 	private float flashAlpha = 0f;
+
+	// Object highlighting tracking
+	private final Map<Integer, TileObject> stallObjects = new HashMap<>();
+	private static final int THIEVING_ANIMATION = 881; // Standard thieving animation
 
 	@Override
 	protected void startUp() throws Exception
 	{
 		overlayManager.add(overlay);
+		overlayManager.add(objectOverlay);
 
 		for (StallTypes stall : StallTypes.values()) {
 			watching.put(stall, false);
 			notifiers.put(stall, false);
 			watchNotifiers.put(stall, false);
+			stallWatchTicksRemaining.put(stall, 0);
 		}
 	}
 
@@ -147,8 +193,74 @@ public class PRThievingHelperPlugin extends Plugin
 	protected void shutDown() throws Exception
 	{
 		overlayManager.remove(overlay);
+		overlayManager.remove(objectOverlay);
 		watching.clear();
 		guards.clear();
+		stallObjects.clear();
+		stallWatchTicksRemaining.clear();
+	}
+
+	@Subscribe
+	public void onGameObjectSpawned(GameObjectSpawned event)
+	{
+		checkForStallObject(event.getGameObject());
+	}
+
+	@Subscribe
+	public void onGameObjectDespawned(GameObjectDespawned event)
+	{
+		stallObjects.remove(event.getGameObject().getId());
+	}
+
+	@Subscribe
+	public void onGroundObjectSpawned(GroundObjectSpawned event)
+	{
+		checkForStallObject(event.getGroundObject());
+	}
+
+	@Subscribe
+	public void onGroundObjectDespawned(GroundObjectDespawned event)
+	{
+		stallObjects.remove(event.getGroundObject().getId());
+	}
+
+	@Subscribe
+	public void onDecorativeObjectSpawned(DecorativeObjectSpawned event)
+	{
+		checkForStallObject(event.getDecorativeObject());
+	}
+
+	@Subscribe
+	public void onDecorativeObjectDespawned(DecorativeObjectDespawned event)
+	{
+		stallObjects.remove(event.getDecorativeObject().getId());
+	}
+
+	@Subscribe
+	public void onWallObjectSpawned(WallObjectSpawned event)
+	{
+		checkForStallObject(event.getWallObject());
+	}
+
+	@Subscribe
+	public void onWallObjectDespawned(WallObjectDespawned event)
+	{
+		stallObjects.remove(event.getWallObject().getId());
+	}
+
+	private void checkForStallObject(TileObject object)
+	{
+		if (object == null)
+		{
+			return;
+		}
+		
+		int id = object.getId();
+		// Check if this is one of our stall objects
+		if (stallObjectIds.containsValue(id))
+		{
+			stallObjects.put(id, object);
+		}
 	}
 
 	@Subscribe
@@ -192,15 +304,34 @@ public class PRThievingHelperPlugin extends Plugin
 	{
 		//System.out.println(client.getSelectedSceneTile().getWorldLocation());
 
-		watching.put(StallTypes.FUR, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.FUR)));
-		watching.put(StallTypes.SILK, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.SILK)));
-		watching.put(StallTypes.GEM, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.GEM)));
-		watching.put(StallTypes.CANNON, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.CANNON)));
-		watching.put(StallTypes.FISH, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.FISH)));
-		watching.put(StallTypes.ORE, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.ORE)));
-		watching.put(StallTypes.SPICE, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.SPICE)));
-		watching.put(StallTypes.VEG, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.VEG)));
-		watching.put(StallTypes.SILVER, isAnyGuardAtPosition(stallWatchPositions.get(StallTypes.SILVER)));
+		// Update guard watching status and track timing
+		for (StallTypes stall : StallTypes.values())
+		{
+			boolean wasWatching = watching.get(stall);
+			boolean isWatching = isAnyGuardAtPosition(stallWatchPositions.get(stall));
+			watching.put(stall, isWatching);
+			
+			// Track guard watch duration
+			if (isWatching && !wasWatching)
+			{
+				// Guard just arrived at this stall
+				stallWatchTicksRemaining.put(stall, GUARD_WATCH_DURATION);
+			}
+			else if (isWatching && wasWatching)
+			{
+				// Guard is still watching, decrement timer
+				int ticksRemaining = stallWatchTicksRemaining.get(stall);
+				if (ticksRemaining > 0)
+				{
+					stallWatchTicksRemaining.put(stall, ticksRemaining - 1);
+				}
+			}
+			else if (!isWatching)
+			{
+				// No guard at this stall
+				stallWatchTicksRemaining.put(stall, 0);
+			}
+		}
 
 		if(config.notifyForFur())
 		{
@@ -245,6 +376,46 @@ public class PRThievingHelperPlugin extends Plugin
 		return flashAlpha;
 	}
 
+	/**
+	 * Gets the tile object to highlight for a given stall selection.
+	 * Returns the object if it's safe to click (not watched, or guard leaving soon).
+	 */
+	private TileObject getStallObjectToHighlight(PRThievingHelperConfig.StallSelection stallSelection)
+	{
+		if (!config.enableObjectHighlighting())
+		{
+			return null;
+		}
+
+		StallTypes stallType = configStallToStallType(stallSelection);
+		if (stallType == null)
+		{
+			return null;
+		}
+
+		// Highlight if safe to click (not watched, or guard leaving soon)
+		if (isStallSafeToClick(stallType))
+		{
+			Integer objectId = stallObjectIds.get(stallType);
+			if (objectId != null)
+			{
+				return stallObjects.get(objectId);
+			}
+		}
+		
+		return null;
+	}
+
+	public TileObject getPrimaryStallToHighlight()
+	{
+		return getStallObjectToHighlight(config.primaryStall());
+	}
+
+	public TileObject getSecondaryStallToHighlight()
+	{
+		return getStallObjectToHighlight(config.secondaryStall());
+	}
+
 	private boolean isValidGuard(NPC npc)
 	{
 		String npcName = npc.getName();
@@ -254,6 +425,36 @@ public class PRThievingHelperPlugin extends Plugin
 		int npcId = npc.getId();
         return npcName.equals(GUARD_NAME) && GUARD_IDS.contains(npcId);
     }
+
+	/**
+	 * Checks if a stall is safe to highlight for clicking.
+	 * A stall is safe if:
+	 * - No guard is watching it, OR
+	 * - A guard is watching but will leave within SAFE_BUFFER_TICKS ticks
+	 *   This gives players time to click right before the guard leaves
+	 */
+	private boolean isStallSafeToClick(StallTypes stall)
+	{
+		if (stall == null)
+		{
+			return false;
+		}
+		
+		boolean isWatched = watching.get(stall);
+		
+		if (!isWatched)
+		{
+			// No guard watching, definitely safe
+			return true;
+		}
+		
+		// Guard is watching - check if it will leave very soon
+		int ticksRemaining = stallWatchTicksRemaining.get(stall);
+		
+		// Only highlight when guard is about to leave (≤ SAFE_BUFFER_TICKS remaining)
+		// This ensures the guard leaves before/as the player clicks
+		return ticksRemaining > 0 && ticksRemaining <= SAFE_BUFFER_TICKS;
+	}
 
 	private boolean isAnyGuardAtPosition(List<WorldPoint> wps)
 	{
@@ -334,5 +535,33 @@ public class PRThievingHelperPlugin extends Plugin
 	PRThievingHelperConfig provideConfig(ConfigManager configManager)
 	{
 		return configManager.getConfig(PRThievingHelperConfig.class);
+	}
+
+	private StallTypes configStallToStallType(PRThievingHelperConfig.StallSelection selection)
+	{
+		switch (selection)
+		{
+			case CANNONBALL:
+				return StallTypes.CANNON;
+			case VEG:
+				return StallTypes.VEG;
+			case ORE:
+				return StallTypes.ORE;
+			case FISH:
+				return StallTypes.FISH;
+			case SPICE:
+				return StallTypes.SPICE;
+			case SILVER:
+				return StallTypes.SILVER;
+			case GEM:
+				return StallTypes.GEM;
+			case FUR:
+				return StallTypes.FUR;
+			case SILK:
+				return StallTypes.SILK;
+			case NONE:
+			default:
+				return null;
+		}
 	}
 }
