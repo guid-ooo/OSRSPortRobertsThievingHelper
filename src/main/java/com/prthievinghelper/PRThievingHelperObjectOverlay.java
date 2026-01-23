@@ -34,23 +34,41 @@ public class PRThievingHelperObjectOverlay extends Overlay
     @Override
     public Dimension render(Graphics2D graphics)
     {
-        if (!config.enableObjectHighlighting())
+        if (!config.enableStallHighlighting())
         {
             return null;
         }
 
         // Highlight primary stall with primary color
         TileObject primaryStall = plugin.getPrimaryStallToHighlight();
-        if (primaryStall != null)
-        {
-            renderStallHighlight(graphics, primaryStall, config.primaryHighlightColor());
-        }
-
+        
         // Highlight secondary stall with secondary color
         TileObject secondaryStall = plugin.getSecondaryStallToHighlight();
-        if (secondaryStall != null)
+
+        if (config.highlightOnlyOneStall())
         {
-            renderStallHighlight(graphics, secondaryStall, config.secondaryHighlightColor());
+            // Only highlight one stall at a time, prefer primary
+            if (primaryStall != null)
+            {
+                renderStallHighlight(graphics, primaryStall, config.primaryHighlightColor());
+            }
+            else if (secondaryStall != null)
+            {
+                renderStallHighlight(graphics, secondaryStall, config.secondaryHighlightColor());
+            }
+        }
+        else
+        {
+            // Highlight both stalls when safe
+            if (primaryStall != null)
+            {
+                renderStallHighlight(graphics, primaryStall, config.primaryHighlightColor());
+            }
+            
+            if (secondaryStall != null)
+            {
+                renderStallHighlight(graphics, secondaryStall, config.secondaryHighlightColor());
+            }
         }
 
         return null;

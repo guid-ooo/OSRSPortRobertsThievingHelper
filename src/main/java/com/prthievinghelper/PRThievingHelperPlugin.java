@@ -382,7 +382,7 @@ public class PRThievingHelperPlugin extends Plugin
 	 */
 	private TileObject getStallObjectToHighlight(PRThievingHelperConfig.StallSelection stallSelection)
 	{
-		if (!config.enableObjectHighlighting())
+		if (!config.enableStallHighlighting())
 		{
 			return null;
 		}
