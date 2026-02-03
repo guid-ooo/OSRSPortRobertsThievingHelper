@@ -4,6 +4,8 @@ import net.runelite.api.Client;
 import net.runelite.api.Perspective;
 import net.runelite.api.TileObject;
 import net.runelite.api.Point;
+import net.runelite.api.coords.LocalPoint;
+import net.runelite.api.ChatMessageType;
 import net.runelite.client.ui.overlay.Overlay;
 import net.runelite.client.ui.overlay.OverlayLayer;
 import net.runelite.client.ui.overlay.OverlayPosition;
@@ -39,42 +41,57 @@ public class PRThievingHelperObjectOverlay extends Overlay
             return null;
         }
 
-        // Highlight primary stall with primary color
+        // Get stalls and their remaining thieves counts
         TileObject primaryStall = plugin.getPrimaryStallToHighlight();
+        Integer primaryThieves = plugin.getPossibleThievesForDisplay(config.primaryStall());
         
-        // Highlight secondary stall with secondary color
         TileObject secondaryStall = plugin.getSecondaryStallToHighlight();
+        Integer secondaryThieves = plugin.getPossibleThievesForDisplay(config.secondaryStall());
 
-        if (config.highlightOnlyOneStall())
+        // Determine colors (use config switch color for switch highlight when counter hits limit)
+        Color primaryColor = config.primaryHighlightColor();
+        Color secondaryColor = config.secondaryHighlightColor();
+        Color switchColor = config.switchHighlightColor();
+        
+        // Check if we should switch away from either stall (they hit 4 completed thieves)
+        boolean shouldSwitchAwayFromPrimary = plugin.shouldSwitchAwayFrom(config.primaryStall());
+        boolean shouldSwitchAwayFromSecondary = plugin.shouldSwitchAwayFrom(config.secondaryStall());
+        
+        // When primary hits 4 completed, highlight secondary with switch color (signal to switch TO secondary)
+        // When secondary hits 4 completed, highlight primary with switch color (signal to switch TO primary)
+        if (shouldSwitchAwayFromPrimary && secondaryStall != null)
         {
-            // Only highlight one stall at a time, prefer primary
-            if (primaryStall != null)
-            {
-                renderStallHighlight(graphics, primaryStall, config.primaryHighlightColor());
-            }
-            else if (secondaryStall != null)
-            {
-                renderStallHighlight(graphics, secondaryStall, config.secondaryHighlightColor());
-            }
+            secondaryColor = switchColor;
         }
-        else
+        
+        if (shouldSwitchAwayFromSecondary && primaryStall != null)
         {
-            // Highlight both stalls when safe
-            if (primaryStall != null)
-            {
-                renderStallHighlight(graphics, primaryStall, config.primaryHighlightColor());
-            }
-            
-            if (secondaryStall != null)
-            {
-                renderStallHighlight(graphics, secondaryStall, config.secondaryHighlightColor());
-            }
+            primaryColor = switchColor;
+        }
+
+        // Only highlight one stall at a time
+        // Prefer showing the one you should switch to (white/switch color highlight)
+        if (secondaryColor == switchColor && secondaryStall != null)
+        {
+            renderStallHighlight(graphics, secondaryStall, secondaryColor, secondaryThieves);
+        }
+        else if (primaryColor == switchColor && primaryStall != null)
+        {
+            renderStallHighlight(graphics, primaryStall, primaryColor, primaryThieves);
+        }
+        else if (primaryStall != null)
+        {
+            renderStallHighlight(graphics, primaryStall, primaryColor, primaryThieves);
+        }
+        else if (secondaryStall != null)
+        {
+            renderStallHighlight(graphics, secondaryStall, secondaryColor, secondaryThieves);
         }
 
         return null;
     }
 
-    private void renderStallHighlight(Graphics2D graphics, TileObject object, Color highlightColor)
+    private void renderStallHighlight(Graphics2D graphics, TileObject object, Color highlightColor, Integer possibleThieves)
     {
         
         // Draw clickbox/outline
@@ -95,6 +112,35 @@ public class PRThievingHelperObjectOverlay extends Overlay
                                         highlightColor.getAlpha()));
             graphics.setStroke(new BasicStroke(2));
             graphics.draw(objectClickbox);
+        }
+        
+        // Draw number of possible thieves above the stall
+        // -1 means "ready for switch but watched" - show highlight but no number
+        if (possibleThieves != null && possibleThieves > 0)
+        {
+            LocalPoint localPoint = object.getLocalLocation();
+            if (localPoint != null)
+            {
+                Point textLocation = Perspective.getCanvasTextLocation(
+                    client,
+                    graphics,
+                    localPoint,
+                    String.valueOf(possibleThieves),
+                    200 // Z-offset to position text above the object
+                );
+                
+                if (textLocation != null)
+                {
+                    // Draw text shadow for better visibility
+                    graphics.setFont(new Font("Arial", Font.BOLD, 16));
+                    graphics.setColor(Color.BLACK);
+                    graphics.drawString(String.valueOf(possibleThieves), textLocation.getX() + 1, textLocation.getY() + 1);
+                    
+                    // Draw the actual text
+                    graphics.setColor(highlightColor);
+                    graphics.drawString(String.valueOf(possibleThieves), textLocation.getX(), textLocation.getY());
+                }
+            }
         }
     }
 }

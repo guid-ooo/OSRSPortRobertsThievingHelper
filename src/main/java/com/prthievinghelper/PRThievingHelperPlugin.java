@@ -17,6 +17,7 @@ import net.runelite.api.events.DecorativeObjectSpawned;
 import net.runelite.api.events.DecorativeObjectDespawned;
 import net.runelite.api.events.WallObjectSpawned;
 import net.runelite.api.events.WallObjectDespawned;
+import net.runelite.api.events.StatChanged;
 import net.runelite.client.Notifier;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -66,7 +67,33 @@ public class PRThievingHelperPlugin extends Plugin
 	private final Map<StallTypes, Integer> stallWatchTicksRemaining = new HashMap<>();
 	private static final int GUARD_WATCH_DURATION = 10; // Guards watch for 10 ticks
 	private static final int THIEVING_DURATION = 5; // Thieving takes 5 ticks
-	private static final int SAFE_BUFFER_TICKS = 2; // Extra buffer for safety (highlight when ≤2 ticks remain)
+	
+	// Strategic thieving limits
+	private static final int PRIMARY_THIEVE_LIMIT = 4;
+	private static final int SECONDARY_THIEVE_LIMIT = 2;
+	private static final int BASE_THIEVES_PER_STALL = 4;
+	
+	// Track completed thieves per stall (resets when stall becomes unwatched)
+	private final Map<StallTypes, Integer> completedThievesAtStall = new HashMap<>();
+	
+	// Track which stall should switch away (show switch highlight on other stall)
+	private final Map<StallTypes, Boolean> stallShouldSwitchAway = new HashMap<>();
+	
+	// XP values for each stall type (for detecting which stall was thieved)
+	// Some stalls give fractional XP, so we check a range (±0.5)
+	private static final Map<StallTypes, Double> STALL_XP_VALUES = Map.of(
+			StallTypes.VEG, 5.0,
+			StallTypes.SILK, 24.0,
+			StallTypes.FUR, 38.5,
+			StallTypes.FISH, 49.5,
+			StallTypes.SILVER, 80.0,
+			StallTypes.SPICE, 110.0,
+			StallTypes.GEM, 129.5,
+			StallTypes.ORE, 191.0,
+			StallTypes.CANNON, 223.0
+	);
+	
+	private int previousThievingXp = -1;
 
 	public final Map<StallTypes, WorldPoint> stallPositions = Map.of(
 			StallTypes.FUR, new WorldPoint(1870, 3292, 0),
@@ -173,7 +200,6 @@ public class PRThievingHelperPlugin extends Plugin
 
 	// Object highlighting tracking
 	private final Map<Integer, TileObject> stallObjects = new HashMap<>();
-	private static final int THIEVING_ANIMATION = 881; // Standard thieving animation
 
 	@Override
 	protected void startUp() throws Exception
@@ -186,6 +212,8 @@ public class PRThievingHelperPlugin extends Plugin
 			notifiers.put(stall, false);
 			watchNotifiers.put(stall, false);
 			stallWatchTicksRemaining.put(stall, 0);
+			completedThievesAtStall.put(stall, 0);
+			stallShouldSwitchAway.put(stall, false);
 		}
 	}
 
@@ -198,6 +226,8 @@ public class PRThievingHelperPlugin extends Plugin
 		guards.clear();
 		stallObjects.clear();
 		stallWatchTicksRemaining.clear();
+		completedThievesAtStall.clear();
+		stallShouldSwitchAway.clear();
 	}
 
 	@Subscribe
@@ -300,6 +330,69 @@ public class PRThievingHelperPlugin extends Plugin
 	}
 
 	@Subscribe
+	public void onStatChanged(StatChanged statChanged)
+	{
+		// Check if thieving XP changed
+		if (statChanged.getSkill() != Skill.THIEVING)
+		{
+			return;
+		}
+		
+		int currentXp = statChanged.getXp();
+		
+		// Initialize on first check
+		if (previousThievingXp == -1)
+		{
+			previousThievingXp = currentXp;
+			return;
+		}
+		
+		// Check if XP increased (successful thieve)
+		if (currentXp > previousThievingXp)
+		{
+			int xpGained = currentXp - previousThievingXp;
+			previousThievingXp = currentXp;
+			
+			// Determine which stall was thieved based on XP gained
+			// Use ±0.5 range to account for fractional XP that alternates rounding
+			StallTypes thievedStall = null;
+			for (Map.Entry<StallTypes, Double> entry : STALL_XP_VALUES.entrySet())
+			{
+				double expectedXp = entry.getValue();
+				// Check if gained XP is within 0.5 of expected (handles rounding)
+				if (xpGained >= expectedXp - 0.5 && xpGained <= expectedXp + 0.5)
+				{
+					thievedStall = entry.getKey();
+					break;
+				}
+			}
+			
+			// Increment completed thieves counter
+			if (thievedStall != null)
+			{
+				int current = completedThievesAtStall.getOrDefault(thievedStall, 0);
+				completedThievesAtStall.put(thievedStall, current + 1);
+				
+				// Check if we should switch away from this stall
+				int limit = getStrategicLimit(thievedStall);
+				if (current + 1 >= limit)
+				{
+					stallShouldSwitchAway.put(thievedStall, true);
+				}
+				
+				// Clear the switch flag for OTHER stalls (we're actively thieving this one now)
+				for (StallTypes otherStall : StallTypes.values())
+				{
+					if (otherStall != thievedStall && stallShouldSwitchAway.get(otherStall))
+					{
+						stallShouldSwitchAway.put(otherStall, false);
+					}
+				}
+			}
+		}
+	}
+
+	@Subscribe
 	public void onGameTick(GameTick event)
 	{
 		//System.out.println(client.getSelectedSceneTile().getWorldLocation());
@@ -310,6 +403,13 @@ public class PRThievingHelperPlugin extends Plugin
 			boolean wasWatching = watching.get(stall);
 			boolean isWatching = isAnyGuardAtPosition(stallWatchPositions.get(stall));
 			watching.put(stall, isWatching);
+			
+			// Reset completed thieves counter when stall becomes unwatched (fresh opportunity)
+			if (!isWatching && wasWatching)
+			{
+				completedThievesAtStall.put(stall, 0);
+				// Don't clear stallShouldSwitchAway here - let it persist until we thieve the other stall
+			}
 			
 			// Track guard watch duration
 			if (isWatching && !wasWatching)
@@ -377,8 +477,61 @@ public class PRThievingHelperPlugin extends Plugin
 	}
 
 	/**
+	 * Helper methods for primary/secondary stall resolution
+	 */
+	private StallTypes getPrimaryStallType()
+	{
+		return configStallToStallType(config.primaryStall());
+	}
+
+	private StallTypes getSecondaryStallType()
+	{
+		return configStallToStallType(config.secondaryStall());
+	}
+
+	/**
+	 * Gets the strategic thieve limit for a stall based on its role.
+	 * Primary: 4 thieves, Secondary: 2 thieves, Others: 4 thieves
+	 */
+	private int getStrategicLimit(StallTypes stall)
+	{
+		if (stall == getPrimaryStallType())
+		{
+			return PRIMARY_THIEVE_LIMIT;
+		}
+		else if (stall == getSecondaryStallType())
+		{
+			return SECONDARY_THIEVE_LIMIT;
+		}
+		return BASE_THIEVES_PER_STALL;
+	}
+
+	/**
+	 * Checks if we should show switch highlight on the target stall.
+	 * Returns true if the OTHER stall (not target) has hit its limit.
+	 */
+	private boolean shouldShowSwitchHighlightOn(StallTypes targetStall)
+	{
+		StallTypes primaryType = getPrimaryStallType();
+		StallTypes secondaryType = getSecondaryStallType();
+		
+		// Show switch on secondary if primary hit its limit
+		if (targetStall == secondaryType && primaryType != null)
+		{
+			return stallShouldSwitchAway.getOrDefault(primaryType, false);
+		}
+		// Show switch on primary if secondary hit its limit
+		if (targetStall == primaryType && secondaryType != null)
+		{
+			return stallShouldSwitchAway.getOrDefault(secondaryType, false);
+		}
+		return false;
+	}
+
+	/**
 	 * Gets the tile object to highlight for a given stall selection.
-	 * Returns the object if it's safe to click (not watched, or guard leaving soon).
+	 * Returns the object if it's safe to click (not watched, or guard leaving soon),
+	 * OR if we need to show switch highlight (other stall hit its limit).
 	 */
 	private TileObject getStallObjectToHighlight(PRThievingHelperConfig.StallSelection stallSelection)
 	{
@@ -392,9 +545,10 @@ public class PRThievingHelperPlugin extends Plugin
 		{
 			return null;
 		}
-
-		// Highlight if safe to click (not watched, or guard leaving soon)
-		if (isStallSafeToClick(stallType))
+		
+		// Highlight if safe to click OR if we need to show switch highlight
+		boolean showSwitchHighlight = shouldShowSwitchHighlightOn(stallType);
+		if (isStallSafeToClick(stallType) || showSwitchHighlight)
 		{
 			Integer objectId = stallObjectIds.get(stallType);
 			if (objectId != null)
@@ -428,32 +582,97 @@ public class PRThievingHelperPlugin extends Plugin
 
 	/**
 	 * Checks if a stall is safe to highlight for clicking.
-	 * A stall is safe if:
-	 * - No guard is watching it, OR
-	 * - A guard is watching but will leave within SAFE_BUFFER_TICKS ticks
-	 *   This gives players time to click right before the guard leaves
+	 * A stall is safe if it's not watched and hasn't reached its strategic limit.
 	 */
 	private boolean isStallSafeToClick(StallTypes stall)
 	{
-		if (stall == null)
+		if (stall == null || watching.get(stall))
 		{
 			return false;
 		}
 		
-		boolean isWatched = watching.get(stall);
-		
-		if (!isWatched)
+		int completed = completedThievesAtStall.getOrDefault(stall, 0);
+		int limit = getStrategicLimit(stall);
+		return completed < limit;
+	}
+	
+	/**
+	 * Returns true if this stall just hit 4 completed thieves and should show switch highlight on OTHER stall.
+	 */
+	public boolean shouldSwitchAwayFrom(PRThievingHelperConfig.StallSelection stallSelection)
+	{
+		StallTypes stallType = configStallToStallType(stallSelection);
+		if (stallType == null)
 		{
-			// No guard watching, definitely safe
-			return true;
+			return false;
+		}
+		return stallShouldSwitchAway.getOrDefault(stallType, false);
+	}
+	
+	/**
+	 * Calculates remaining thieves for a stall.
+	 * When unwatched: 4 thieves possible before guard arrives
+	 * This decreases as you complete thieves at that stall
+	 * Resets to 4 when stall becomes unwatched again
+	 */
+	private int getRemainingThieves(StallTypes stall)
+	{
+		if (stall == null || watching.get(stall))
+		{
+			return 0;
 		}
 		
-		// Guard is watching - check if it will leave very soon
-		int ticksRemaining = stallWatchTicksRemaining.get(stall);
+		int completed = completedThievesAtStall.getOrDefault(stall, 0);
+		return Math.max(0, BASE_THIEVES_PER_STALL - completed);
+	}
+	
+	/**
+	 * Gets the display number for a stall (with strategic caps applied).
+	 * Primary stall: max 4 thieves
+	 * Secondary stall: max 2 thieves
+	 */
+	public Integer getPossibleThievesForDisplay(PRThievingHelperConfig.StallSelection stallSelection)
+	{
+		StallTypes stallType = configStallToStallType(stallSelection);
+		if (stallType == null || !config.enableStallHighlighting())
+		{
+			return null;
+		}
 		
-		// Only highlight when guard is about to leave (≤ SAFE_BUFFER_TICKS remaining)
-		// This ensures the guard leaves before/as the player clicks
-		return ticksRemaining > 0 && ticksRemaining <= SAFE_BUFFER_TICKS;
+		// If showing switch highlight (other stall hit limit), show the fresh count
+		if (shouldShowSwitchHighlightOn(stallType))
+		{
+			return getStrategicLimit(stallType);
+		}
+		
+		// If watched, don't show
+		if (watching.get(stallType))
+		{
+			return null;
+		}
+		
+		// Normal case: show countdown
+		int remaining = getRemainingThieves(stallType);
+		if (remaining <= 0)
+		{
+			return 0;
+		}
+		
+		int completed = completedThievesAtStall.getOrDefault(stallType, 0);
+		int limit = getStrategicLimit(stallType);
+		StallTypes primaryType = getPrimaryStallType();
+		StallTypes secondaryType = getSecondaryStallType();
+		
+		if (stallType == primaryType)
+		{
+			return Math.min(remaining, limit);
+		}
+		else if (stallType == secondaryType)
+		{
+			return Math.max(0, limit - completed);
+		}
+		
+		return remaining;
 	}
 
 	private boolean isAnyGuardAtPosition(List<WorldPoint> wps)

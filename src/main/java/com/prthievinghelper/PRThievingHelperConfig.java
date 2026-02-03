@@ -94,7 +94,7 @@ public interface PRThievingHelperConfig extends Config
 	@Alpha
 	default Color primaryHighlightColor()
 	{
-		return new Color(0, 255, 0, 255);
+		return new Color(255, 113, 0, 255);
 	}
 
 	@ConfigItem(
@@ -111,15 +111,16 @@ public interface PRThievingHelperConfig extends Config
 	}
 
 	@ConfigItem(
-			keyName = "highlightOnlyOneStall",
-			name = "Highlight Only One Stall",
-			description = "When enabled, only highlights one stall at a time (primary is preferred when both are safe).",
+			keyName = "switchHighlightColor",
+			name = "Switch Highlight Color",
+			description = "The color to highlight a stall when you should switch to it (when the other stall hits its limit).",
 			section = stallHighlighting,
 			position = 6
 	)
-	default boolean highlightOnlyOneStall()
+	@Alpha
+	default Color switchHighlightColor()
 	{
-		return false;
+		return new Color(0, 255, 0, 255);
 	}
 
 	@ConfigItem(
